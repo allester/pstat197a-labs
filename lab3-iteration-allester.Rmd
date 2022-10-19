@@ -1,0 +1,228 @@
+---
+title: "pstat-131-section-3-allester"
+author: "allester"
+date: '2022-10-12'
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+# install.packages('infer') # execute once then comment out
+
+# data location
+url <- 'https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/labs/lab3-iteration/data/biomarker-clean.csv'
+
+# function for outlier trimming
+trim_fn <- function(x){
+  x[x > 3] <- 3
+  x[x < -3] <- -3
+  
+  return(x)
+}
+
+# read in and preprocess data
+asd <- read_csv(url) %>%
+  select(-ados) %>%
+  # log transform
+  mutate(across(.cols = -group, log10)) %>%
+  # center and scale
+  mutate(across(.cols = -group, ~ scale(.x)[, 1])) %>%
+  # trim outliers
+  mutate(across(.cols = -group, trim_fn))
+```
+
+```{r}
+asd
+```
+
+# Multiple Testing with Loops
+
+```{r}
+x <- asd %>% filter(group == 'ASD') %>% pull(CHIP)
+y <- asd %>% filter(group == 'TD') %>% pull(CHIP)
+t.test(x, y, var.equal = F)
+```
+
+```{r}
+t.test(x, y) %>% str()
+```
+
+``` {r}
+n_tests <- 100
+p_vals <- rep(NA, n_tests)
+
+for(i in 1:n_tests){
+  x <- asd %>% filter(group == 'ASD') %>% pull(i + 1)
+  y <- asd %>% filter(group == 'TD') %>% pull(i + 1)
+  p_vals[i] <- t.test(x, y, var.equal = F)$p.value
+}
+```
+
+``` {r}
+tibble(protein = colnames(asd)[2:(n_tests + 1)],
+       p = p_vals)
+```
+
+
+# t-test using apply
+``` {r}
+# number of tests to perform
+n_tests <- 100
+
+# convert to a list
+asd_list <- asd %>% 
+  select(1:(n_tests + 1)) %>%
+  pivot_longer(cols = -group,
+               names_to = 'protein',
+               values_to = 'level') %>%
+  group_by(protein) %>%
+  group_split()
+
+# first entry in list
+asd_list[[1]]
+```
+
+``` {r}
+t.test(level ~ group, data = asd_list[[1]])
+```
+
+
+Make a function that perfoms a t test on the ith index of a list of dfs
+
+```{r}
+# p value for ith protein
+tt_fn <- function(i){
+  t.test(level ~ group, data = asd_list[[i]])$p.value
+}
+
+# check
+tt_fn(1)
+```
+
+Using sapply to apply function across a vector
+
+``` {r}
+sapply(1:n_tests, tt_fn)
+```
+
+# Nesting
+
+``` {r}
+asd_nested <- asd %>%
+  pivot_longer(-group, 
+               names_to = 'protein', 
+               values_to = 'level') %>%
+  nest(data = c(level, group))
+
+asd_nested %>% head(5)
+```
+
+# Can also use the map function to run a t test on the data frames of a tibble
+
+``` {r}
+tt_fn <- function(.df){
+  t.test(level ~ group, data = .df)
+}
+
+rslt <- asd_nested %>%
+  slice(1:10) %>%
+  mutate(ttest.out = map(data, tt_fn))
+
+rslt
+```
+
+Reading the t test results from the first row using the slice() function
+
+```{r}
+rslt %>% slice(1L) %>% pull(ttest.out)
+```
+
+Output ttest col as a tibble which can be unnested
+
+``` {r}
+# wrapper around infer::t_test
+tt_fn <- function(.df){
+  infer::t_test(.df, 
+         formula = level ~ group,
+         order = c('ASD', 'TD'),
+         alternative = 'two-sided',
+         var.equal = F)
+}
+
+# compute test results
+tt_out <- asd_nested %>%
+  slice(1:n_tests) %>%
+  mutate(ttest = map(data, tt_fn))
+
+# preview
+tt_out %>% head(4)
+```
+
+Unnesting the tibble in theh ttest column
+
+```{r}
+tt_out %>% 
+  unnest(ttest) %>%
+  head(4)
+```
+
+# Adjusting p-values
+``` {r}
+# bonferroni correction
+tt_out %>% 
+  unnest(ttest) %>%
+  mutate(p_adj = p_value*n_tests) %>%
+  select(protein, p_value, p_adj) %>%
+  arrange(p_adj) %>%
+  head(4)
+```
+
+``` {r}
+n_tests <- 50
+p_vals <- rep(NA, n_tests)
+#e_diff <- rep(NA, n_tests)
+
+for(i in 1:n_tests){
+  x <- asd %>% filter(group == 'ASD') %>% pull(i + 1)
+  y <- asd %>% filter(group == 'TD') %>% pull(i + 1)
+  p_vals[i] <- t.test(x, y, var.equal = F)$p.value
+  e_diff[i] <- t.test(x, y, var.equal = F)$estimate
+}
+
+t.test(x, y, var.equal = F)$estimate
+```
+
+``` {r}
+tibble(protein = colnames(asd)[2:(n_tests + 1)],
+       p = p_vals, e = e_diff)
+```
+
+
+# sapply
+
+```{r}
+tt_fn <- function(i){
+  t.test(level ~ group, data = asd_list[[i]])$stderr
+}
+
+# check
+tt_fn(1)
+```
+
+
+```{r}
+tt_fn <- function(i){
+  test_rslt <- t.test(level ~ group, data = asd_list[[i]])
+  out <- c(diff_e = as.numeric(test_rslt$estimate[1]) - as.numeric(test_rslt$estimate[2]), 
+           stderr = test_rslt$stderr)
+  out
+}
+
+tt_fn(1)
+```
+
+```{r}
+sapply(1:50, tt_fn) %>% t() %>% as_tibble()
+```
+
+

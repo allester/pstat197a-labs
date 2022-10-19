@@ -1,0 +1,206 @@
+---
+title: "lab4-classification-accuracy"
+author: "allester"
+date: '2022-10-19'
+output: pdf_document
+---
+
+```{r}
+# load packages
+library(tidyverse)
+library(tidymodels)
+library(modelr)
+library(rsample)
+library(yardstick)
+
+# read data
+url <- 'https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/labs/lab4-logistic/data/biomarker_clean.csv'
+
+s_star <- c("DERM", "RELT", "IgD", "PTN", "FSTL1")
+biomarker <- read_csv(url) %>%
+  # subset to proteins of interest and group
+  select(group, any_of(s_star)) %>%
+  # convert group (chr) to binary (lgl)
+  mutate(class = (group == 'ASD')) %>%
+  select(-group)
+```
+
+```{r}
+glimpse(biomarker)
+```
+
+```{r}
+# for reproducibility
+set.seed(102022)
+
+# partition data
+partitions <- biomarker %>%
+  initial_split(prop = 0.8)
+
+# examine
+partitions
+```
+
+```{r}
+# training set
+training(partitions) %>% head(4)
+```
+
+```{r}
+# testing set
+testing(partitions) %>% head(4)
+```
+
+```{r}
+# fit glm
+fit <- glm(class ~ ., 
+           data = biomarker, 
+           family = binomial(link = "logit"))
+```
+
+```{r}
+tidy(fit)
+```
+
+# Action: Fit the model and interpret the parameter
+
+Take IgD, it has a p-value < 0.01; thus it is statistically significant. Since it has an estimate of -0.66 it has an odds ratio of $e^{-0.66} = .51$. This means that there the IgD group has a 51%
+time the odds of the non-IgD group of having ASD.
+
+```{r}
+# compute predictions on the test set
+testing(partitions) %>%
+  add_predictions(fit)
+```
+
+```{r}
+# manually transform to probabilities
+testing(partitions) %>%
+  add_predictions(fit) %>%
+  mutate(probs = 1/(1 + exp(-pred))) %>%
+  select(class, pred, probs) %>%
+  head(5)
+```
+
+```{r}
+# predict on scale of response
+testing(partitions) %>%
+  add_predictions(fit, type = 'response') %>%
+  select(class, pred) %>%
+  head(5)
+```
+
+```{r}
+# predict classes
+testing(partitions) %>%
+  add_predictions(fit, type = 'response') %>%
+  mutate(pred.class = (pred > 0.5)) %>%
+  select(class, pred, pred.class) %>%
+  head(5)
+```
+
+```{r}
+# tabulate
+testing(partitions) %>%
+  add_predictions(fit, type = 'response') %>%
+  mutate(pred.class = (pred > 0.5)) %>%
+  select(class, pred.class) %>%
+  table()
+```
+
+```{r}
+# store predictions as factors
+pred_df <- testing(partitions) %>%
+  add_predictions(fit, type = 'response') %>%
+  mutate(pred.class = (pred > 0.5),
+         group = factor(class, labels = c('TD', 'ASD')),
+         pred.group = factor(pred.class, labels = c('TD', 'ASD'))) 
+
+# check order of factor levels
+pred_df %>% pull(group) %>% levels()
+```
+
+```{r}
+# compute specificity
+pred_df %>%
+  specificity(truth = group, 
+              estimate = pred.group,
+              event_level = 'second')
+```
+
+```{r}
+# sensitivity
+pred_df %>%
+  sensitivity(truth = group,
+              estimate = pred.group,
+              event_level = 'second')
+```
+# Action: Accuracy
+
+```{r}
+# accuracy
+pred_df %>%
+  accuracy(truth = group,
+              estimate = pred.group,
+              event_level = 'second')
+```
+
+```{r}
+# define panel (arguments must be yardstick metric function names)
+panel_fn <- metric_set(sensitivity, specificity)
+
+# compute
+pred_df %>%
+  panel_fn(truth = group,
+           estimate = pred.group,
+           event_level = 'second')
+```
+
+# Action: Compute a panel of precision, recall, and F1 score.
+
+```{r}
+# define panel (arguments must be yardstick metric function names)
+panel_fn <- metric_set(precision, recall, f_meas)
+
+# compute
+pred_df %>%
+  panel_fn(truth = group,
+           estimate = pred.group,
+           event_level = 'second')
+```
+
+```{r}
+pred_df %>% conf_mat(truth = group, estimate = pred.group)
+```
+
+```{r}
+pred_df %>%
+  roc_curve(truth = group, estimate = pred)
+```
+
+```{r}
+pred_df %>%
+  roc_curve(truth = group, 
+            estimate = pred,
+            event_level = 'second') %>%
+  ggplot(aes(y = sensitivity, x = 1 - specificity)) +
+  geom_path() +
+  geom_abline(slope = 1, intercept = 0)
+```
+
+```{r}
+# area under the curve
+pred_df %>% roc_auc(truth = group, 
+                    estimate = pred,
+                    event_level = 'second')
+```
+
+```{r}
+panel <- metric_set(roc_auc, accuracy) 
+
+pred_df %>% panel(truth = group,
+                  estimate = pred.group,
+                  pred,
+                  event_level = 'second')
+```
+
